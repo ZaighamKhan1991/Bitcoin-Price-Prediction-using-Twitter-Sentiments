@@ -21,7 +21,7 @@ The **objective** of this project are to find out:
 - Do the sentiments of tweets and news influence the price of Bitcoin?
 - Does the value of the S&P 500 Index influence the price of Bitcoin?
 - Which predictive model is the most optimal for predicting the price of the Bitcoin?
-- 
+
 ## Project Title: The Effect of News and Tweets on the Price of Bitcoin
 
 + Team members
