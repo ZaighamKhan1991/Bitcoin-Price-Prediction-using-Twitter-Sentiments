@@ -2,7 +2,7 @@
 
 ### [Project Description](doc/project2_desc.md)
 
-![screenshot] (data/bitcoin.jpeg)
+![screenshot] (data/abcd.png)
 
 Cryptocurrency is the talk of the town in today’s world. It is essentially a form of digital
 currency, which any government or financial institution does not govern. It has gained rapid
