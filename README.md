@@ -2,7 +2,7 @@
 
 ### [Project Description](doc/project2_desc.md)
 
-![screenshot](doc/figs/Restuarants.PNG)
+![screenshot] https://www.buyucoin.com/crypto-labs/wp-content/uploads/2021/09/twitter-tip-PabByS.jpeg
 
 Cryptocurrency is the talk of the town in today’s world. It is essentially a form of digital
 currency, which any government or financial institution does not govern. It has gained rapid
