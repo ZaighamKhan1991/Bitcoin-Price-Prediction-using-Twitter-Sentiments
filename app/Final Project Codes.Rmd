@@ -1,0 +1,1166 @@
+
+---
+title: "The Effect of News and Tweets on the Price of Bitcoin"
+author: "Ning Ding, Zaigham Khan, Chelsea Miao, Biyu Wang, and Anna Yass"
+date: "4/19/2022"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+# {.tabset}
+
+## R Set Up {.tabset}
+
+
+### File names
+
+```{r}
+#1 Uncleaned_Merged_BitcoinNYTimesSnP.csv 
+#2 bitcoin.csv
+#3 NYTimes.csv
+#4 twitter.csv
+#5 SnP.csv 
+#6 cleandata.csv
+```
+ 
+
+### Packages & Library
+
+```{r}
+#Set up R library with packages 
+
+#install.packages("tidytext")
+#install.packages("lexicon")
+#install.packages("textdata") 
+#install.packages("M3") #say no when asking for compilation
+#install.packages("rgdal")
+#install.packages("zoo")
+#install.packages("textclean")
+#install.packages("latticeExtra")
+
+
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(tidytext)
+library(stringr)
+library(lexicon)
+library(textdata)
+library(lubridate)
+library(M3)
+library(data.table)
+library(zoo)
+library(textclean)
+library(tm)
+library(h2o)
+library(nnet)
+library(randomForest)
+library(rpart)
+library(rpart.plot)
+library(caret)
+library(glmnet)
+library(Matrix)
+library(latticeExtra)
+library(ggthemes)
+library(gridExtra)  
+library(quantmod)
+library(xts)
+library(forecast) 
+library(fpp)
+library(fpp2) 
+library(tseries) 
+library(lubridate)
+library(urca)
+library(vars)
+library(mFilter)
+library(tseries)
+library(tidyverse)
+library(zoo)
+library(neuralnet)
+```
+
+### Raw Data Files
+
+Preparing data for Time Series 
+
+```{r}
+#Time Series
+#Create a dataframe with all time intervals
+ts <- seq(as.POSIXct("2022-01-01 05:00:00"), as.POSIXct("2022-02-22 12:00:00"),by = "hour") 
+
+df_ts <- data.frame(date=as.POSIXct(ts, format="%Y-%m-%d %H:%M:%S %z"))
+names(df_ts)[names(df_ts) == 'date'] <- 'new_date'
+```
+
+Combining New York Times, Twitter, Bitcoin and S&P 500 data together 
+
+```{r}
+bitcoin_data <- read.csv("bitcoin.csv")
+df <- str_split_fixed(bitcoin_data$date, "T", 2)
+bitcoin_data$date <- df[,1]
+bitcoin_data$time <- df[,2]
+bitcoin_data$time <- gsub(".000Z", "", bitcoin_data$time)
+bitcoin_data$date <- ymd(bitcoin_data$date)
+format <- "%Y-%m-%d %H:%M:%S"
+
+bitcoin_data$new_date <-  as.POSIXct(paste(bitcoin_data$date, bitcoin_data$time), format=format)
+```
+
+```{r}
+#Twitter
+twitter_data <- read.csv("twitter.csv")
+df <- str_split_fixed(twitter_data$Create_Date, " ", 2)
+
+twitter_data$date <- df[,1]
+twitter_data$time <- df[,2]
+twitter_data$time <- gsub("+00:00", "", twitter_data$time)
+twitter_data$time <- gsub('^|.$', '', twitter_data$time)
+twitter_data$date <- ymd(twitter_data$date)
+
+format <- "%Y-%m-%d %H:%M:%S"
+
+twitter_data$Create_Date <- as.POSIXct(paste(twitter_data$date, twitter_data$time), format=format)
+
+twitter_data$new_date <- ceiling_date(twitter_data$Create_Date, "hour")
+twitter_data$text <- twitter_data$Tweet
+twitter_data$source <- "Twitter"
+
+```
+
+```{r}
+#New York Times News Data
+news_data <- read.csv("NYTimes.csv",stringsAsFactors = T, na.strings=c("","NA","N/A"))
+
+format <- "%m/%d/%Y %H:%M"
+
+news_data$Create_Date <- as.POSIXct(news_data$created_time, format=format)
+news_data$new_date <- ceiling_date(news_data$Create_Date, "hour")
+
+news_data<- news_data %>% 
+  mutate(text = coalesce(snippet,headline))
+
+news_data$source = news_data$news_desk
+```
+
+```{r}
+#S&P500 data
+SnP500_data <- read.csv("SnP.csv",stringsAsFactors = T, na.strings=c("","NA","N/A"))
+SnP500_data$Date_copy <- mdy(SnP500_data$Date_copy)
+
+format <- "%Y-%m-%d %H:%M"
+
+SnP500_data$Create_Date <- as.POSIXct(paste(SnP500_data$Date_copy, SnP500_data$Time), format=format)
+SnP500_data$new_date <- ceiling_date(SnP500_data$Create_Date, "hour")
+
+```
+
+```{r}
+#Combining Bitcoin with Time Series
+bitcoin_ts_df <- merge(bitcoin_data,df_ts,by="new_date",all.x=TRUE)
+
+nrow(bitcoin_ts_df)
+nrow(df_ts)
+
+bitcoin_ts_df <- bitcoin_ts_df[!duplicated(bitcoin_ts_df),]
+```
+
+```{r}
+#Combining Bitcoin with Twitter
+
+bitcoin_twitter_df <- merge(bitcoin_ts_df,twitter_data,by="new_date",all.x=TRUE)
+```
+
+```{r}
+#Dropping unnecessary columns
+keep <- c("text","Create_Date","new_date","priceUsd","circulatingSupply","source")
+bitcoin_twitter_df = bitcoin_twitter_df[,(names(bitcoin_twitter_df) %in% keep)]
+
+#Remove duplicates in data
+nrow(bitcoin_twitter_df)
+bitcoin_twitter_df <- bitcoin_twitter_df %>% distinct()
+nrow(bitcoin_twitter_df)
+```
+
+```{r}
+#Combining Bitcoin with News Data
+bitcoin_news_df <- merge(bitcoin_data,news_data,by="new_date",all.x=TRUE)
+keep <- c("text","Create_Date","new_date","priceUsd","circulatingSupply","source")
+bitcoin_news_df = bitcoin_news_df[,(names(bitcoin_news_df) %in% keep)]
+
+#Remove duplicates in data
+nrow(bitcoin_news_df)
+bitcoin_news_df <- bitcoin_news_df %>% distinct()
+nrow(bitcoin_news_df)
+```
+
+```{r}
+#Union of both the dataframes combined_df and combined_df_2
+twitter_news_bitcoin_df=union(bitcoin_twitter_df,bitcoin_news_df)
+
+keep <- c("new_date","text","Create_Date","priceUsd","circulatingSupply","source")
+twitter_news_bitcoin_df = twitter_news_bitcoin_df[,(names(twitter_news_bitcoin_df) %in% keep)]
+
+write.csv(twitter_news_bitcoin_df,"Merged_Dataframe1.csv")
+
+twitter_news_bitcoin_df$Create_Date_Copy <- twitter_news_bitcoin_df$Create_Date
+twitter_news_bitcoin_df$Create_Date <- strptime(twitter_news_bitcoin_df$Create_Date,  format = "%Y-%m-%d %H:%M")
+
+```
+
+```{r}
+#Joining the merged dataframe with SnP500_data
+
+twitter_news_bitcoin_snp500_df= twitter_news_bitcoin_df %>% left_join(SnP500_data,by="Create_Date", all.x=TRUE)
+names(twitter_news_bitcoin_snp500_df)[names(twitter_news_bitcoin_snp500_df) == 'new_date.x'] <- 'new_date'
+names(twitter_news_bitcoin_snp500_df)[names(twitter_news_bitcoin_snp500_df) == 'new_date.y'] <- 'closest_snp500date'
+
+#twitter_news_bitcoin_snp500_df %>% arrange(twitter_news_bitcoin_snp500_df$new_date)
+
+twitter_news_bitcoin_snp500_df <- na.locf(twitter_news_bitcoin_snp500_df, fromLast = TRUE)
+
+keep <- c("new_date","text","priceUsd","circulatingSupply","source","Close")
+twitter_news_bitcoin_snp500_df = twitter_news_bitcoin_snp500_df[,(names(twitter_news_bitcoin_snp500_df) %in% keep)]
+names(twitter_news_bitcoin_snp500_df)[names(twitter_news_bitcoin_snp500_df) == 'Close'] <- 'SnP500 Closing Price'
+
+write.csv(twitter_news_bitcoin_snp500_df,"Merged_Raw_Dataframe.csv")
+```
+
+### Merged Data Files 
+
+```{r}
+dta = read.csv("Merged_Raw_Dataframe.csv", header=TRUE, stringsAsFactor=T)
+```
+
+## Cleaning Part 1 {.tabset}
+
+### Date and Time Columns 
+
+Split up date column 
+
+```{r}
+#Separating created_time into two separate columns 
+dta <- separate(data = dta, col = new_date, into  = c('date', 'time'), sep = ' ') 
+
+head(dta)
+```
+
+Converting date and time from character to factor 
+
+```{r}
+dta$date <- as.factor(dta$date) #For date
+dta$time <- as.factor(dta$time) #For time
+```
+
+Converting factor into POSIXt and then the date 
+
+```{r}
+dta$date<-as.Date(dta$date,format="%Y-%m-%d") #Defining desire format of date 
+
+str(dta) #Examine variables and columns in dta, see how the date column is now "date"
+```
+
+### Converting Factor to Character Columns  
+
+Convert snippet and headline to character
+
+```{r}
+dta$text <- as.character(dta$text) #For text
+
+dta$source <- as.character(dta$source) #For source
+
+```
+
+### Drop Unnecessary columns 
+
+```{r}
+drop <- c("circulatingSupply")
+
+dta = dta[,!(names(dta) %in% drop)]
+
+```
+
+### Renaming Columns 
+```{r}
+names(dta)[1] <- 'ID'
+names(dta)[4] <- 'BitcoinPrice'
+names(dta)[7] <- 'SP500Price'
+
+head(dta)
+```
+
+### Reordering Columns 
+```{r}
+dta <- dta[,c("ID", "date", "time", "text", "source","BitcoinPrice", "SP500Price")]
+
+head(dta)
+```
+## Cleaning Part 2 {.tabset}
+
+### Removing Upper Case 
+
+Converting everything to lower case letters 
+
+```{r}
+dta$text <- tolower(dta$text)
+
+```
+
+### Cleaning Text Column 
+
+Removing unwanted items such as Emoji, links etc. 
+
+```{r}
+#removing unwanted symbols/characters
+dta$text <- replace_emoji(dta$text) 
+dta$text <- replace_emoticon(dta$text)
+dta$text <- replace_non_ascii(dta$text)
+dta$text <- replace_symbol(dta$text)
+dta$text <- replace_word_elongation(dta$text)
+dta$text <- replace_white(dta$text)
+dta$text <- replace_contraction(dta$text)
+dta$text <- replace_kern(dta$text)
+dta$text <- replace_number(dta$text)
+dta$text <- replace_ordinal(dta$text)
+
+#removing hyperlinks 
+dta$text <- gsub(" ?/\\w+ ?", "", dta$text)
+dta$text <- gsub(" ?http\\w+ ?", "", dta$text)
+dta$text<-gsub("skeptical.co","",as.character(dta$text))
+
+```
+
+### Replacing abbreviations 
+
+```{r}
+dta$text<-gsub("lol","laugh out loud",as.character(dta$text))
+dta$text<-gsub("lmao","laughing my ass off",as.character(dta$text))
+dta$text<-gsub("wut","what",as.character(dta$text))
+dta$text<-gsub("wut","what",as.character(dta$text))
+dta$text<-gsub("wtf","what the fuck",as.character(dta$text))
+dta$text<-gsub("idk","i don't know",as.character(dta$text))
+dta$text<-gsub("btc","bitcoin",as.character(dta$text))
+dta$text<-gsub("gm","good morning",as.character(dta$text))
+dta$text<-gsub("vid","video",as.character(dta$text))
+dta$text<-gsub("payin'","paying",as.character(dta$text))
+dta$text<-gsub("payin'","paying",as.character(dta$text))
+dta$text<-gsub("g'day","good day",as.character(dta$text))
+dta$text<-gsub("lfg","looking for group",as.character(dta$text))
+dta$text<-gsub("hby","how about you",as.character(dta$text))
+dta$text<-gsub("hodl","hold on for dear life",as.character(dta$text))
+dta$text<-gsub("icymi","in case you missed it",as.character(dta$text))
+```
+
+### Remove Rows with NA Text 
+
+Removing rows of data with an empty cell in the text column. It means, this Twitter user or news article consists of unknown characters or symbols that cannot be identified. For example, removing someone that only tweeted an Emoji
+
+```{r}
+
+dta<-dta[!dta$text=="",] 
+```
+
+### Removing Stop Words 
+
+```{r}
+#Unnest
+
+dta1 <- dta %>% 
+  unnest_paragraphs(word,text)%>%
+  #select(word)%>%
+  #mutate(word = gsub("/t.co", "'", word)) %>%
+  anti_join(stop_words) %>%
+  ungroup()
+  
+head(dta1)
+
+#Vector for stop words
+vec<-tm::stopwords("english")
+
+#Filter
+dta1<-dta1[!(dta1$word %in% vec),]
+#Re aggregate by id
+#dta1 <- dta1 %>% group_by(ID) %>% summarise(text=paste0(word,collapse = ' '))
+
+head(dta1)
+```
+
+## News/Twitter Data Exploration {.tabset}
+
+### Looking at words 
+
+Columns
+
+```{r}
+dta_with_words <- dta1 %>%
+  unnest_tokens(word, word) %>%
+  anti_join(stop_words, by= c("word" = "word"))
+
+head(dta_with_words)
+
+nrc_lexicon <- get_sentiments("nrc")
+
+#now the job
+dta_with_words1 <- dta_with_words %>%
+             unnest_tokens(word, word) %>%  # unnest the words
+             left_join(nrc_lexicon) %>%     # join with the lexicon to have sentiments
+             left_join(dta_with_words)      # join with your data to have titles
+
+table_sentiment <- table(dta_with_words1$ID, dta_with_words1$sentiment)
+
+df_sentiment <- as.data.frame.matrix(table_sentiment) 
+ 
+#create ID 
+df_sentiment<- tibble::rowid_to_column(df_sentiment, "ID")
+
+head(df_sentiment)
+ 
+ 
+dta55 <- merge(dta_with_words1, df_sentiment, by="ID")
+
+
+```
+
+### News dataframe
+
+Break up into just news data for further data exploration 
+
+```{r}
+dta_news <- dta %>%
+  filter(str_detect(source, 'Business|Financial|Bitcoin News')) 
+```
+
+### Twitter dataframe
+
+Break up into just twitter data for further data exploration 
+
+```{r}
+dta_twitter <- dta %>%
+  filter(str_detect(source, 'Twitter')) 
+```
+
+
+### Mean words 
+
+In both and news and Twitter data frame
+
+```{r}
+mean(sapply(strsplit(as.character(dta$text), "[[:space:]]+"), length)) #average number of words in news headline and tweets
+
+mean(sapply(strsplit(as.character(dta_news$text), "[[:space:]]+"), length)) #for news
+
+mean(sapply(strsplit(as.character(dta_twitter$text), "[[:space:]]+"), length)) #for twitter
+  
+
+```
+
+### Proportion of positive/negative words in news articles & tweets
+
+```{r}
+
+#for news - shows there are 45% positive and 55% negative 
+dta_news %>%
+  unnest_tokens(output=word,input=text)%>%
+  inner_join(get_sentiments('bing'))%>%
+  group_by(sentiment)%>%
+  summarize(n = n())%>%
+  mutate(proportion = n/sum(n))%>% 
+  ungroup() 
+
+#for tweets - shows there are 60% positive and 40% negative - for later to see if just filter for bitcoin news
+
+dta_twitter %>%
+  unnest_tokens(output=word,input=text)%>%
+  inner_join(get_sentiments('bing'))%>%
+  group_by(sentiment)%>%
+  summarize(n = n())%>%
+  mutate(proportion = n/sum(n))%>% 
+  ungroup() 
+```
+
+## NRC Sentiment Polarity Lexicon sentiment for news 
+```{r}
+head(hash_sentiment_nrc)
+
+hash_sentiment_nrc %>%
+  group_by(y)%>%
+  summarize(count= n())%>%
+  ungroup()
+
+dta_news %>%
+  unnest_tokens(output = word, input = text)%>%
+  inner_join(y = hash_sentiment_nrc,by = c('word'='x'))%>%
+  group_by(y)%>%
+  summarize(count = n())%>%
+  ungroup()
+```
+
+### Downloading Lexicon 
+
+```{r}
+nrc = read.table(
+                 file ='https://raw.githubusercontent.com/pseudorational/data/master/nrc_lexicon.txt',
+                 header =F,
+                 col.names =c('word','sentiment','num'),
+                 sep ='\t',
+                 stringsAsFactors =F)
+nrc = nrc[nrc$num!=0,]
+nrc$num = NULL
+```
+
+### List of Lexicon emotions 
+
+```{r}
+nrc%>%
+  group_by(sentiment)%>%
+  count()%>%
+  ungroup()
+```
+
+### Top emotions for news & twitter
+
+```{r}
+dta_news%>%
+  unnest_tokens(output = word, input = text)%>%
+  inner_join(nrc)%>%
+  group_by(sentiment)%>%
+  count()%>%
+  arrange(desc(n))%>%
+  ungroup()
+
+#visualization
+
+dta_news%>%
+  unnest_tokens(output = word, input = text)%>%
+  inner_join(nrc)%>%
+  group_by(sentiment)%>%
+  count()%>%
+  ungroup()%>% 
+  ggplot(aes(x=reorder(sentiment,X = n),y=n,fill=sentiment))+
+         geom_col()+guides(fill=F)+coord_flip()
+```
+### Top Emotions for Twitter 
+
+```{r}
+dta_twitter%>%
+  unnest_tokens(output = word, input = text)%>%
+  inner_join(nrc)%>%
+  group_by(sentiment)%>%
+  count()%>%
+  arrange(desc(n))%>%
+  ungroup()
+
+#check to see if this makes sense 
+
+dta_twitter%>%
+  unnest_tokens(output = word, input = text)%>%
+  inner_join(nrc)%>%
+  group_by(sentiment)%>%
+  count()%>%
+  ungroup()%>% 
+  ggplot(aes(x=reorder(sentiment,X = n),y=n,fill=sentiment))+
+         geom_col()+guides(fill=F)+coord_flip()
+```
+
+## Bitcoin S&P500 Data Exploration {.tabset}
+
+### Bitcoin and S&P500 Prices
+
+```{r}
+twitterfilter <- dta %>%
+  filter(source == "Twitter")
+
+# --> construct separate plots for each series
+bitcoin_price <- xyplot(BitcoinPrice ~ date, twitterfilter, type = "l" , lwd=2)
+sp500_price <- xyplot(SP500Price ~ date, twitterfilter, type = "l", lwd=2)
+ 
+# --> Make the plot with second y axis:
+doubleYScale(bitcoin_price, sp500_price,text = c("bitcoin_price", "sp500_price"), add.ylab2 = TRUE)
+```
+
+### Correlation between prices
+
+```{r}
+cor(dta$BitcoinPrice, dta$SP500Price)
+```
+
+## Cleaning Part 3 {.tabset}
+
+### Create new columns for model 
+
+```{r}
+dta5 <- dcast(setDT(dta1), ID + date + time + source + BitcoinPrice + SP500Price + word ~ source, value.var = 'source', fill = "")
+
+head(dta5)
+```
+
+### Replace column names with 1's 
+
+```{r}
+
+dta5$Twitter_1 <- gsub("Twitter", "1", dta5$Twitter)
+
+
+dta5$Bitcoin_Article_1 <- gsub("Bitcoin_Article", "1", dta5$Bitcoin_Article)
+
+
+dta5$Business_1<- gsub("Business", "1", dta5$Business)
+
+
+dta5$Financial_1 <- gsub("Financial", "1", dta5$Financial)
+
+
+#drop other columns 
+dta5 <- subset(dta5, select = -c(8:11)) 
+
+```
+
+### Replace all NA and empty columns to 0 
+
+```{r}
+dta6<- dta5 %>%
+   mutate(across(c("Bitcoin_Article_1","Twitter_1", "Business_1", "Financial_1"), ~ifelse(.=="", 0, as.character(.))))
+
+dta6[is.na(dta6)] <- 0 
+
+```
+
+### Final New Columns 
+
+```{r}
+dta_final <- merge(df_sentiment, dta6, by="ID")
+
+head(dta_final) 
+
+dta_new <- dta_final %>%
+  dplyr::select(anger, anticipation, disgust, fear, joy, negative, positive, sadness, surprise,
+         trust) %>%
+  mutate_if(is.integer, ~ 1 * (. > 0)) #if any number is greater than 1, replace with a 1
+ 
+
+#create ID column
+dta_new1<- tibble::rowid_to_column(dta_new, "ID")
+
+
+dta_final1 <- merge(dta_new1, dta6, by="ID", all.dta6 = TRUE)
+
+head(dta_final1)
+
+dta_final1 <- dta_final1[,c("ID", "date", "time", "word", "source","BitcoinPrice", "SP500Price", "Bitcoin_Article_1","Twitter_1", "Business_1", "Financial_1","anger", "anticipation", "disgust", "fear", "joy", "negative", "positive", "sadness", "surprise", "trust")]
+
+drop <- c("source") #drop the source column since it is now separated columns 
+dta_final1_model = dta_final1[,!(names(dta_final1) %in% drop)]
+
+head(dta_final1_model) 
+```
+### Updating Date and Time 
+
+Prep the data for Time Series model
+
+```{r}
+final_data <- read.csv("cleandata_final.csv")
+
+final_data$date <- ymd(final_data$date) #please change this according to personal R setting, might need to change to "ymd"
+
+final_data$newdate <- as.POSIXct(paste(final_data$date, final_data$time), format="%Y-%m-%d %H:%M:%S")
+
+head(final_data)
+
+cleandata_final <- write.csv(final_data,"cleandata_final.csv") #exporting final cleaned dataset
+```
+
+### Creating new date and time columns 
+
+```{r}
+final_data_hourly <- final_data %>%
+  dplyr::mutate(new_date=newdate) %>%
+  dplyr::group_by(new_date) %>%
+  dplyr::summarise(BitcoinPrice = mean(BitcoinPrice))
+```
+
+```{r}
+for (col in colnames(final_data)) {
+  if ((col!= "BitcoinPrice") && (col!="newdate")){
+    print(col)
+    final_data_hourly[col] <- final_data %>%
+      dplyr::select(col, newdate)%>%
+      dplyr::group_by(newdate) %>%
+      dplyr::summarise(col=mean(get(col))) %>% dplyr::select(col)
+  }
+}
+
+```
+### Viewing Data 
+
+```{r}
+head(final_data_hourly)
+```
+
+### Setting Bitcoin and S&P 500 Price TIme 
+
+```{r}
+#Setting bitcoin price time
+bitcoin_price_ts <- zoo(
+  x         = final_data_hourly[["BitcoinPrice"]],
+  order.by  = final_data_hourly[["new_date"]],
+  frequency = 24
+)
+
+#Setting S&P 500 price time 
+SP500_ts <- zoo(
+  x         = final_data_hourly[["SP500Price"]],
+  order.by  = final_data_hourly[["new_date"]],
+  frequency = 24
+)
+
+#Setting news data with time 
+Bitcoin_Article_ts <- zoo(
+  x         = final_data_hourly[["Bitcoin_Article_1"]],
+  order.by  = final_data_hourly[["new_date"]],
+  frequency = 24
+)
+Business_ts <- zoo(
+  x         = final_data_hourly[["Business_1"]],
+  order.by  = final_data_hourly[["new_date"]],
+  frequency = 24
+)
+
+Financial_ts <- zoo(
+  x         = final_data_hourly[["Financial_1"]],
+  order.by  = final_data_hourly[["new_date"]],
+  frequency = 24
+)
+
+anger_ts <- zoo(
+  x         = final_data_hourly[["anger"]],
+  order.by  = final_data_hourly[["new_date"]],
+  frequency = 24
+)
+
+anticipation_ts <- zoo(
+  x         = final_data_hourly[["anticipation"]],
+  order.by  = final_data_hourly[["new_date"]],
+  frequency = 24
+)
+
+disgust_ts <- zoo(
+  x         = final_data_hourly[["disgust"]],
+  order.by  = final_data_hourly[["new_date"]],
+  frequency = 24
+)
+
+fear_ts <- zoo(
+  x         = final_data_hourly[["fear"]],
+  order.by  = final_data_hourly[["new_date"]],
+  frequency = 24
+)
+
+joy_ts <- zoo(
+  x         = final_data_hourly[["joy"]],
+  order.by  = final_data_hourly[["new_date"]],
+  frequency = 24
+)
+
+negative_ts <- zoo(
+  x         = final_data_hourly[["negative"]],
+  order.by  = final_data_hourly[["new_date"]],
+  frequency = 24
+)
+
+positive_ts <- zoo(
+  x         = final_data_hourly[["positive"]],
+  order.by  = final_data_hourly[["new_date"]],
+  frequency = 24
+)
+
+sadness_ts <- zoo(
+  x         = final_data_hourly[["sadness"]],
+  order.by  = final_data_hourly[["new_date"]],
+  frequency = 24
+)
+
+surprise_ts <- zoo(
+  x         = final_data_hourly[["surprise"]],
+  order.by  = final_data_hourly[["new_date"]],
+  frequency = 24
+)
+
+trust_ts <- zoo(
+  x         = final_data_hourly[["trust"]],
+  order.by  = final_data_hourly[["new_date"]],
+  frequency = 24
+)
+```
+
+### Examining the data 
+
+```{r}
+start(bitcoin_price_ts)
+end(bitcoin_price_ts)
+length(bitcoin_price_ts)
+
+class(bitcoin_price_ts)
+```
+
+## Predictive Modeling {.tabset}
+
+### Research Question 1 {.tabset}
+
+Do the sentiments of tweets and news influence the price of Bitcoin?
+
+#### Split Data {.tabset}
+
+Split the data into train vs test
+
+```{r}
+set.seed(100)
+
+split = sample(1:nrow(dta_final1_model),size = 0.7*nrow(dta_final1_model))
+train = dta_final1_model[split,]
+test = dta_final1_model[-split,]
+
+```
+
+```{r}
+names(dta_final1_model) #check the names of columns
+```
+
+#### Linear Regression Model 1 {.tabset}
+
+Predicting Bitcoin price (y) with the following independent variables: anger, anticipation, digust, fear, joy, negative, positive, sadness, surprise, trust
+
+```{r}
+reg1 = lm(BitcoinPrice ~ anger + anticipation + disgust + fear + joy + negative 
+            + positive + sadness + surprise + trust, train)
+
+summary(reg1)
+
+# Finding the RMSE of the first Linear Regression model 
+
+pred_reg1 = predict(reg1, newdata=test)
+rmse_reg1 = sqrt(mean((pred_reg1-test$BitcoinPrice)^2)); 
+rmse_reg1
+```
+
+#### Random Forest {.tabset}
+
+Keep in mind, this is using the same test, train split
+
+```{r}
+set.seed(100)
+
+forest1 = randomForest(BitcoinPrice~ anger + anticipation + disgust + fear + joy + negative
+            + positive + sadness + surprise + trust, 
+            train, 
+            ntree=1000)
+
+# Finding the importance of variables
+varImpPlot(forest1)
+importance(forest1)
+
+# Finding the RMSE of the randomForest model
+pred_forest1 = predict(forest1, newdata=test)
+rmse_forest1 = sqrt(mean((pred_forest1-test$BitcoinPrice)^2))
+rmse_forest1
+```
+
+#### Basic Neural Networks {.tabset}
+
+```{r}
+set.seed(100)
+model1 = nnet(BitcoinPrice~ anger + anticipation + disgust
+            + fear + joy + negative + positive + sadness + surprise + trust,
+             data = train,
+             size=5,
+             decay=0.1,
+             MaxNWts=10000,
+             maxit=1000) 
+#RMSE
+pred_neural1 = predict(model1, newdata=test)
+rmse_neural1 = sqrt(mean((pred_neural1-test$BitcoinPrice)^2))
+rmse_neural1
+```
+
+### Research Question 1 Subpart {.tabset}
+
+Do positive or negative sentiments affect the price of Bitcoin more? 
+
+#### Linear Regression Model 2 {.tabset}
+
+```{r}
+set.seed(100)
+reg2 = lm(BitcoinPrice ~ negative + positive, train)
+summary(reg2)
+ 
+#RMSE of the 2nd linear regression 
+pred_reg2 = predict(reg2, newdata=test)
+rmse_reg2 = sqrt(mean((pred_reg2-test$BitcoinPrice)^2)); 
+rmse_reg2
+```
+
+
+#### Random Forest {.tabset}
+
+```{r}
+set.seed(100)
+
+forest2 = randomForest(BitcoinPrice~ negative + positive, 
+            train, 
+            ntree=1000)
+
+# Finding the importance of variables
+varImpPlot(forest2)
+importance(forest2)
+
+#RMSE
+pred_forest2 = predict(forest2, newdata=test)
+rmse_forest2 = sqrt(mean((pred_forest2-test$BitcoinPrice)^2))
+rmse_forest2
+```
+
+#### Basic Neural Network {.tabset}
+
+```{r}
+set.seed(100)
+model2 = nnet(BitcoinPrice~ negative + positive,
+             data = train,
+             size=5,
+             decay=0.1,
+             MaxNWts=10000,
+             maxit=1000) 
+#RMSE
+pred_neural2 = predict(model2, newdata=test)
+rmse_neural2 = sqrt(mean((pred_neural2-test$BitcoinPrice)^2))
+rmse_neural2
+```
+
+
+### Research Question 2 {.tabset}
+
+Does the addition of S&P 500 improve our model? 
+
+#### Linear Regression {.tabset}
+
+```{r}
+#Linear regression of emotional sentiments with S&P500
+reg3 = lm(BitcoinPrice ~ SP500Price + anger + anticipation + disgust + fear + joy + negative 
+          + positive + sadness + surprise + trust, 
+          train)
+summary(reg3)
+
+#RMSE
+pred_reg3 = predict(reg3, newdata=test)
+rmse_reg3 = sqrt(mean((pred_reg3-test$BitcoinPrice)^2)); 
+rmse_reg3
+```
+
+```{r}
+#Linear regression of positive/negative sentiments with S&P500
+reg4 = lm(BitcoinPrice ~ SP500Price + negative + positive, train)
+summary(reg4)
+
+#RMSE
+pred_reg4 = predict(reg4, newdata=test)
+rmse_reg4 = sqrt(mean((pred_reg4-test$BitcoinPrice)^2)); 
+rmse_reg4
+```
+
+#### Random Forest {.tabset}
+
+```{r}
+#Random Forest of emotional sentiments with S&P500
+set.seed(100)
+forest3 = randomForest(BitcoinPrice~ SP500Price + anger + anticipation + disgust
+            + fear + joy + negative + positive + sadness + surprise + trust, 
+            train, 
+            ntree=1000)
+
+#Finding the importance of variables
+varImpPlot(forest3)
+importance(forest3)
+
+pred_forest3 = predict(forest3, newdata=test)
+rmse_forest3 = sqrt(mean((pred_forest3-test$BitcoinPrice)^2))
+rmse_forest3
+
+```
+
+```{r}
+#Random Forest of positive/negative sentiments with S&P500
+set.seed(100)
+forest4 = randomForest(BitcoinPrice~ SP500Price + negative + positive, 
+            train, 
+            ntree=1000)
+
+#Finding the importance of variables
+varImpPlot(forest4)
+importance(forest4)
+
+pred_forest4 = predict(forest4, newdata=test)
+rmse_forest4 = sqrt(mean((pred_forest4-test$BitcoinPrice)^2))
+rmse_forest4
+
+```
+#### Basic Neural Network {.tabset}
+
+```{r}
+set.seed(100)
+model3 = nnet(BitcoinPrice~ SP500Price + anger + anticipation + disgust
+            + fear + joy + negative + positive + sadness + surprise + trust,
+             data = train,
+             size=5,
+             decay=0.1,
+             MaxNWts=10000,
+             maxit=1000) 
+#RMSE
+pred_neural3 = predict(model3, newdata=test)
+rmse_neural3 = sqrt(mean((pred_neural3-test$BitcoinPrice)^2))
+rmse_neural3
+```
+
+#### Neural Network Prediction only with S&P500 {.tabset}
+
+```{r}
+library(neuralnet)
+set.seed(100)
+NN = neuralnet(BitcoinPrice~ SP500Price,
+             data = train, 
+            hidden = 10)
+plot(NN)
+
+pred_NN = predict(NN, newdata=test)
+rmse_NN = sqrt(mean((pred_NN-test$BitcoinPrice)^2))
+rmse_NN
+```
+
+#### Time Series {.tabset}
+
+
+```{r}
+OLS1 <- lm(bitcoin_price_ts ~ SP500_ts+Bitcoin_Article_ts+Business_ts+Financial_ts+anger_ts+anticipation_ts+disgust_ts+fear_ts+joy_ts+negative_ts+positive_ts+sadness_ts+surprise_ts+trust_ts)
+
+summary(OLS1)
+
+head(bitcoin_price_ts)
+```
+
+```{r}
+autoplot.zoo(cbind(scale(bitcoin_price_ts),scale(SP500_ts)))
+```
+
+##### Finding Lags for Time Series {.tabset}
+
+```{r}
+#Finding the optimal lags
+#bitcoinpred.multivariate <- cbind(bitcoin_price_ts, SP500_ts,Bitcoin_Article_ts,Twitter_ts,Business_ts,Financial_ts,anger_ts,anticipation_ts,disgust_ts,fear_ts,joy_ts,negative_ts,positive_ts,sadness_ts,surprise_ts,trust_ts)
+
+bitcoinpred.multivariate <- cbind(bitcoin_price_ts, SP500_ts,Business_ts,Financial_ts,anger_ts,anticipation_ts,disgust_ts,fear_ts,joy_ts,negative_ts,positive_ts,sadness_ts,surprise_ts,trust_ts)
+
+#colnames(bitcoinpred.multivariate) <- cbind("BitcoinPrice", "SP500Price","Bitcoin_Article","Twitter","Business","Financial","anger","anticipation","disgust","fear","joy","negative","positive","sadness","surprise","trust")
+colnames(bitcoinpred.multivariate) <- cbind("BitcoinPrice", "SP500Price","Business","Financial","anger","anticipation","disgust","fear","joy","negative","positive","sadness","surprise","trust")
+
+#Divide the data into train and test
+train <- head(bitcoinpred.multivariate, round(nrow(bitcoinpred.multivariate) * 0.7))
+h <- nrow(bitcoinpred.multivariate) - nrow(train)
+test <- tail(bitcoinpred.multivariate, h)
+
+start(test)
+```
+##### Optimize RMSE {.tabset}
+
+```{r}
+#Finding the best RMSE by changing the lag parameter
+rmse=0
+
+for (i in 1:50)
+{
+Modelbitcoinpred <- VAR(train, p=i, type="const", season=NULL, exog=NULL)
+summary(Modelbitcoinpred)
+
+#Predicting the values for RMSE
+predicted_price <- predict(Modelbitcoinpred, n.ahead=nrow(test))
+predicted_Bitcoin_price <- predicted_price$fcst$BitcoinPrice
+actual_Bitcoin_price <- test$BitcoinPrice
+
+rmse[i] <- sqrt(mean((actual_Bitcoin_price - predicted_Bitcoin_price[,1])^2))
+}
+
+#rmse
+```
+
+```{r}
+#Ploting RMSE with lag times
+
+plot(rmse, type = "o", col = "red")
+which(rmse ==  min(rmse))
+#lag of 15 gives the minimum rmse
+```
+##### Improved Model with 15 Lag Time {.tabset}
+```{r}
+#Running the final model with 15 rmse
+Modelbitcoinpred <- VAR(train, p=15, type="const", season=NULL, exog=NULL)
+
+#summary(Modelbitcoinpred)
+```
+
+```{r}
+#Predicting the values for RMSE
+predicted_price <- predict(Modelbitcoinpred, n.ahead=nrow(test))
+predicted_Bitcoin_price <- predicted_price$fcst$BitcoinPrice
+actual_Bitcoin_price <- test$BitcoinPrice
+
+rmse_time_series <- sqrt(mean((actual_Bitcoin_price - predicted_Bitcoin_price[,1])^2))
+rmse_time_series
+```
+
+### Research Question 3 {.tabset}
+
+What is the best predictive model? 
+
+#### Comparing RMSE 
+```{r}
+data.frame(
+  models = c(
+    'Emotions Linear',
+    'Emotions Linear with S&P500',
+    'Emotions Basic Neural Network',
+    'Positive/Negative Linear',
+    'Positive/Negative Linear with S&P500',
+    'Positive/Negative Basic Neural Network',
+    'Emotions RandomForest',
+    'Emotions RandomForest with S&P500',
+    'Positive/Negative RandomForest',
+    'Positive/Negative RandomForest with S&P500',
+    'Positive/Negative with S&P500 Basic Neural Networks',
+    'S&P500 Only Basic Neural Networks',
+    'Time Series Model'
+  ),
+ 
+   RMSE = c(
+    rmse_reg1,
+    rmse_reg3,
+    rmse_neural1,
+    
+    rmse_reg2,
+    rmse_reg4,
+    rmse_neural2,
+    
+    rmse_forest1,
+    rmse_forest3,
+    rmse_forest2,
+    
+    rmse_forest4,
+    rmse_neural3,
+    
+    rmse_NN,
+    rmse_time_series
+  )
+)
+```
+
+
